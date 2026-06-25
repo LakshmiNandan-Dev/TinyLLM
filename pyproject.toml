@@ -3,6 +3,8 @@ name = "tinyllm"
 version = "0.0.1"
 description = "From-scratch NL->Oracle-SQL for Oracle E-Business Suite (data engine)"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = ["License :: Other/Proprietary License"]
 dependencies = [
     "sqlglot>=23",
 ]

@@ -168,3 +168,11 @@ instance. The bridge to real data is the next phase and is **not yet built**:
 - **Next:** the **procedural-name training run** — the extractor demo shows it's
   the prerequisite for real-EBS transfer (the model must schema-link, not
   memorize). Then: live-Oracle adapter + `EXPLAIN` gate → serving.
+
+## License
+
+**Proprietary — all rights reserved.** This source is public for evaluation and
+reference only; it is **not** open source. Using, running, copying, modifying,
+or redistributing it, or using it to build a competing product, requires a
+separate written commercial license. See [LICENSE](LICENSE); for licensing
+contact palla.nagendra@gmail.com.
