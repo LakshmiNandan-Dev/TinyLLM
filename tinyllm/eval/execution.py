@@ -68,7 +68,9 @@ class ExecHarness:
         self.schema = schema
         self.rng = random.Random(seed ^ 0x5DEECE66)
         self.dim_rows, self.fact_rows = dim_rows, fact_rows
-        self.conn = sqlite3.connect(":memory:")
+        # check_same_thread=False so the same harness can back a server thread
+        # (the eval uses it single-threaded; this only relaxes the guard).
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._fk_by_col = {(fk.from_table, fk.from_column): fk for fk in schema.foreign_keys}
         self._rowcount: dict[str, int] = {}
         self._build()
