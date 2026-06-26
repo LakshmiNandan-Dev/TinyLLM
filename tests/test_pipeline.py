@@ -96,6 +96,41 @@ def test_procedural_breaks_train_val_name_overlap():
     assert overlap_proc <= 5               # procedural: near-disjoint
 
 
+@pytest.mark.parametrize("level", LEVELS)
+def test_ebs_examples_are_valid(level):
+    for seed in range(40):
+        ex = generate_example(seed, level=level, style="ebs")
+        assert ex.valid, (level, ex.sql, [v.issues for v in ex.validations])
+        assert validate_graph(ex.ast, SchemaGraph(ex.schema)).ok
+
+
+def test_ebs_names_match_real_ebs_vocabulary():
+    """The point of the ebs style: synthetic identifiers look like real EBS, so a
+    real extracted catalog is in-distribution for the model."""
+    import re
+
+    from tinyllm.extract import EbsExtractor, MockCatalog
+
+    def toks(names):
+        out = set()
+        for n in names:
+            out |= set(re.findall(r"[a-z]+[a-z0-9]*", n.lower()))
+        return out
+
+    mock = EbsExtractor(MockCatalog()).extract()
+    mock_vocab = toks(mock.table_names) | toks(c.name for t in mock.tables for c in t.columns)
+
+    v, names = set(), set()
+    for i in range(150):
+        ex = generate_example(i, level=2, style="ebs")
+        names |= set(ex.schema.table_names)
+        v |= toks(ex.schema.table_names) | toks(c.name for t in ex.schema.tables for c in t.columns)
+
+    assert len(mock_vocab & v) / len(mock_vocab) >= 0.9        # covers the real vocabulary
+    assert "gl_code_combinations" in names                     # canonical EBS tables appear
+    assert any(re.fullmatch(r"(ap|gl|po|ar|inv)_\w+_all", t) for t in names)
+
+
 def test_corrupted_join_is_rejected():
     """The graph gate must FAIL a join that doesn't follow the documented FK."""
     ex = next(generate_example(s) for s in SEEDS if generate_example(s).ast.joins)

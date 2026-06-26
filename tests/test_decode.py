@@ -10,12 +10,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tinyllm import generate_example  # noqa: E402
+from tinyllm import generate_example, serialize_schema  # noqa: E402
 from tinyllm.decode import (  # noqa: E402
     SchemaPrefixGate,
     beam_search,
+    build_token_strings,
     constrained_generate,
     graph_check_sql,
+    hard_generate,
     picard_generate,
 )
 from tinyllm.model import EncoderDecoder, ModelConfig, collate  # noqa: E402
@@ -155,3 +157,32 @@ def test_picard_generate_returns_contract():
     sql, constrained = picard_generate(model, tok, batch["src"], batch["src_keep"],
                                        ex.schema, beam=3, max_len=20)
     assert isinstance(sql, str) and isinstance(constrained, bool)
+
+
+# -- hard constraint: logit masking forces real identifiers -----------------
+def test_logit_mask_restricts_to_real_table_prefixes():
+    from tinyllm.tokenizer import BPETokenizer
+    ex = generate_example(3, level=2)
+    gate = SchemaPrefixGate(ex.schema)
+    tok = BPETokenizer().train([serialize_schema(ex.schema), ex.sql], vocab_size=400)
+    ts = build_token_strings(tok)
+    tables = {t.name for t in ex.schema.tables}
+
+    # at a table slot, every identifier-token allowed must prefix a real table
+    allowed = gate.allowed_next_tokens("SELECT 1 FROM ", ts)
+    assert allowed is not None and allowed
+    for tid in allowed:
+        s = ts[tid]
+        if s and (s[0].isalnum() or s[0] == "_"):
+            assert any(t.startswith(s) for t in tables), s
+    # a free position (right after SELECT) is unconstrained
+    assert gate.allowed_next_tokens("SELECT ", ts) is None
+
+
+def test_hard_generate_returns_contract():
+    torch.manual_seed(0)
+    model, tok, ex = _tiny_model_and_tok()
+    batch = collate([(ex.question, "", ex.sql)], tok, "cpu")
+    sql, ok = hard_generate(model, tok, batch["src"], batch["src_keep"],
+                            ex.schema, beam=3, max_len=20)
+    assert isinstance(sql, str) and isinstance(ok, bool)

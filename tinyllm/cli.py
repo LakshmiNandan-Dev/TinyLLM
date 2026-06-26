@@ -61,6 +61,56 @@ def _generate(args):
             print(f"schema: {serialize_schema(ex.schema, ex.ast.tables)}")
 
 
+def _extract(args):
+    """Read the customer's EBS catalog (read-only) and save it for local training."""
+    from .extract import extract_schema
+    from .schema_graph.serialize import save_schema
+    schema = extract_schema(dsn=args.dsn, mock=args.mock)
+    save_schema(schema, args.out)
+    print(f"extracted {len(schema.tables)} tables, {len(schema.foreign_keys)} foreign keys "
+          f"(inferred where EBS declares none) -> {args.out}")
+    for t in schema.tables:
+        flex = sum(1 for c in t.columns if c.business_label)
+        print(f"  {t.name:32s} {len(t.columns):2d} cols"
+              + (f"  ({flex} flexfield segments)" if flex else ""))
+
+
+def _train(args):
+    """Customer-local training: generate data over the EXTRACTED schema(s) and
+    train from scratch, or fine-tune a shipped vendor base (--init)."""
+    import torch
+
+    from .model import EncoderDecoder, ModelConfig
+    from .schema_graph.serialize import load_schema
+    from .tokenizer import BPETokenizer
+    from .train import TrainConfig, Trainer, corpus_texts, load_model, make_local_split
+
+    device = args.device or ("cpu")
+    schemas = [load_schema(p) for p in args.schema]
+    print(f"loaded {len(schemas)} schema(s); generating local training data ...")
+    train_pairs, val_pairs = make_local_split(schemas, args.train, args.val,
+                                              paraphrases=args.paraphrases)
+    print(f"  {len(train_pairs):,} train / {len(val_pairs)} val query pairs")
+
+    if args.init:                                    # fine-tune the shipped base
+        tok = BPETokenizer.load(args.tok)
+        model = load_model(args.init, device=device)
+        print(f"  fine-tuning base {args.init} (vocab {tok.vocab_size})")
+    else:                                            # train from scratch (local-only mode)
+        tok = BPETokenizer().train(corpus_texts(train_pairs), vocab_size=args.vocab)
+        cfg = ModelConfig(vocab_size=tok.vocab_size, d_model=args.d_model, n_heads=8,
+                          n_enc_layers=4, n_dec_layers=4, dropout=args.dropout,
+                          pad_id=tok.special("<pad>"))
+        model = EncoderDecoder(cfg)
+        print(f"  from scratch: {model.num_params()/1e6:.1f}M params, vocab {tok.vocab_size}")
+
+    tcfg = TrainConfig(total_steps=args.steps, batch_size=args.batch_size, lr=args.lr,
+                       eval_every=args.eval_every, warmup=args.warmup,
+                       device=device, ckpt_dir=args.out)
+    Trainer(model, tok, train_pairs, val_pairs, tcfg).train()
+    print(f"customer model -> {args.out}/model_best.pt")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="tinyllm", description="NL -> Oracle EBS SQL toolkit")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -87,6 +137,31 @@ def main(argv=None):
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--schema", action="store_true", help="also print the serialized schema")
     g.set_defaults(func=_generate)
+
+    e = sub.add_parser("extract", help="extract the EBS catalog (read-only) -> schema JSON")
+    e.add_argument("--dsn", help="oracledb DSN, e.g. user/pwd@host:1521/EBS (read-only account)")
+    e.add_argument("--mock", action="store_true", help="use the built-in AP/GL mock (no Oracle)")
+    e.add_argument("--out", default="schema.json")
+    e.set_defaults(func=_extract)
+
+    t = sub.add_parser("train", help="train/fine-tune on the customer's extracted schema(s)")
+    t.add_argument("--schema", nargs="+", required=True, help="schema JSON file(s) from extract")
+    t.add_argument("--init", help="vendor base checkpoint to fine-tune (omit = from scratch)")
+    t.add_argument("--tok", default="artifacts/tokenizer.json", help="base tokenizer (with --init)")
+    t.add_argument("--out", default="customer_model")
+    t.add_argument("--train", type=int, default=2000)
+    t.add_argument("--val", type=int, default=200)
+    t.add_argument("--steps", type=int, default=800)
+    t.add_argument("--paraphrases", type=int, default=2)
+    t.add_argument("--batch-size", type=int, default=48)
+    t.add_argument("--lr", type=float, default=5e-4)
+    t.add_argument("--vocab", type=int, default=2048)
+    t.add_argument("--d-model", type=int, default=256)
+    t.add_argument("--dropout", type=float, default=0.1)
+    t.add_argument("--eval-every", type=int, default=200)
+    t.add_argument("--warmup", type=int, default=50)
+    t.add_argument("--device", default="cpu")
+    t.set_defaults(func=_train)
 
     args = p.parse_args(argv)
     args.func(args)

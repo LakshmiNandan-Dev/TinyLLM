@@ -30,6 +30,8 @@ def main():
     ap.add_argument("--n", type=int, default=6)
     ap.add_argument("--model", action="store_true")
     ap.add_argument("--beam", type=int, default=5)
+    ap.add_argument("--ckpt", default="artifacts/model_best.pt")
+    ap.add_argument("--tok", default="artifacts/tokenizer.json")
     args = ap.parse_args()
 
     schema = EbsExtractor(MockCatalog()).extract()
@@ -52,8 +54,8 @@ def main():
         from tinyllm.model import collate
         from tinyllm.tokenizer import BPETokenizer
         from tinyllm.train import load_model
-        tok = BPETokenizer.load("artifacts/tokenizer.json")
-        model = load_model("artifacts/model_best.pt", device="cpu")
+        tok = BPETokenizer.load(args.tok)
+        model = load_model(args.ckpt, device="cpu")
 
     print("\n=== questions generated over the extracted schema ===")
     exec_ok = 0

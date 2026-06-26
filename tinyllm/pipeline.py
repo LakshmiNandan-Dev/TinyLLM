@@ -41,10 +41,10 @@ class Example:
         return all(v.ok is not False for v in self.validations)
 
 
-def generate_example(seed: int, level: int = 2, n_paraphrases: int = 0,
-                     procedural: bool = False) -> Example:
-    rng = random.Random(seed)
-    schema = SyntheticSchemaGenerator(seed, procedural=procedural).generate()
+def example_from_schema(schema: Schema, rng: random.Random, level: int = 2,
+                        n_paraphrases: int = 0, para_rng: random.Random | None = None) -> Example:
+    """Sample one (question, SQL) example over a GIVEN schema -- works for both a
+    synthetic schema and a customer's extracted EBS catalog."""
     graph = SchemaGraph(schema)
     ast, features = QuerySampler(graph, rng).sample(level)
     sql = render_oracle(ast)
@@ -52,18 +52,20 @@ def generate_example(seed: int, level: int = 2, n_paraphrases: int = 0,
     validations = [validate_graph(ast, graph), validate_sqlglot(sql)]
     phrases: list[str] = []
     if n_paraphrases > 0:
-        # dedicated stream so paraphrases are reproducible and independent of sampling
-        phrases = make_paraphrases(ast, n_paraphrases, random.Random(seed ^ 0x9E3779B9))
+        phrases = make_paraphrases(ast, n_paraphrases, para_rng or random.Random())
     return Example(
-        schema=schema,
-        level=level,
-        question=question,
-        sql=sql,
-        ast=ast,
-        ebs_features=features,
-        validations=validations,
-        paraphrases=phrases,
+        schema=schema, level=level, question=question, sql=sql, ast=ast,
+        ebs_features=features, validations=validations, paraphrases=phrases,
     )
+
+
+def generate_example(seed: int, level: int = 2, n_paraphrases: int = 0,
+                     style: str = "default", procedural: bool = False) -> Example:
+    if procedural:                                   # back-compat alias
+        style = "procedural"
+    schema = SyntheticSchemaGenerator(seed, style=style).generate()
+    return example_from_schema(schema, random.Random(seed), level, n_paraphrases,
+                               random.Random(seed ^ 0x9E3779B9))
 
 
 def serialize_schema(schema: Schema, tables: list[str] | None = None) -> str:

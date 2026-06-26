@@ -36,8 +36,8 @@ def main():
     ap.add_argument("--max-len", type=int, default=120)
     ap.add_argument("--ckpt", default="artifacts/model_best.pt")
     ap.add_argument("--tok", default="artifacts/tokenizer.json")
-    ap.add_argument("--procedural", action="store_true",
-                    help="match a procedurally-trained checkpoint's val distribution")
+    ap.add_argument("--style", choices=("default", "procedural", "ebs"), default="default",
+                    help="match the checkpoint's training name distribution")
     args = ap.parse_args()
 
     tok = BPETokenizer.load(args.tok)
@@ -47,8 +47,7 @@ def main():
     # unseen-schema val examples (with Schema objects for graph checks)
     val = []
     for i in range(args.n):
-        ex = generate_example(VAL_OFFSET + i, level=LEVELS[i % len(LEVELS)],
-                              procedural=args.procedural)
+        ex = generate_example(VAL_OFFSET + i, level=LEVELS[i % len(LEVELS)], style=args.style)
         val.append((ex.question, serialize_schema(ex.schema), ex.sql, ex.schema))
 
     g = {"valid": 0, "graph": 0, "exact": 0}

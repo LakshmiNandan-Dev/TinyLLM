@@ -20,6 +20,8 @@ from ..schema_graph import SchemaGraph
 from ..validate import validate_sqlglot
 from ..validate.result import ValidationResult
 
+_NEG = -1e9   # additive mask value for disallowed tokens
+
 
 def graph_check_sql(sql: str, graph: SchemaGraph) -> ValidationResult:
     """Structural check of generated SQL against the schema graph."""
@@ -201,26 +203,22 @@ class SchemaPrefixGate:
             self.fk_join.setdefault((ft, fc, tt), set()).add(tc)
             self.fk_join.setdefault((tt, tc, ft), set()).add(fc)
 
-    def ok(self, text: str) -> bool:
-        toks: list[tuple[str, str]] = []  # (kind, text): kind in {'w','.','x'}
+    @staticmethod
+    def _lex(text: str) -> list[tuple[str, str]]:
+        """Tokenize into (kind, text): 'w' word, '.' dot, 'x' other symbols."""
+        toks: list[tuple[str, str]] = []
         for m in _GATE_TOK.finditer(text):
             s = m.group()
             if s.isspace():
                 continue
-            if s == ".":
-                toks.append((".", s))
-            elif s[0].isalpha() or s[0] == "_":
-                toks.append(("w", s))
-            else:
-                toks.append(("x", s))
-        if not toks:
-            return True
+            kind = "." if s == "." else "w" if (s[0].isalpha() or s[0] == "_") else "x"
+            toks.append((kind, s))
+        return toks
 
-        tail_incomplete = bool(_TRAIL_WORD.search(text))
-        last_w = max((i for i, t in enumerate(toks) if t[0] == "w"), default=-1)
-
-        # pass 1: alias -> table from `FROM/JOIN <table> <alias>` (skip EXTRACT's
-        # FROM and dotted refs, which never introduce a table)
+    @staticmethod
+    def _alias_map(toks) -> dict[str, str]:
+        """alias -> table from `FROM/JOIN <table> <alias>` (skip EXTRACT's FROM
+        and dotted refs, which never introduce a table)."""
         aliases: dict[str, str] = {}
         for i, (k, s) in enumerate(toks):
             if k != "w" or s.upper() not in ("FROM", "JOIN"):
@@ -234,6 +232,15 @@ class SchemaPrefixGate:
                 j = i + 2
                 if j < len(toks) and toks[j][0] == "w" and toks[j][1].upper() not in _KW:
                     aliases[toks[j][1].lower()] = tbl
+        return aliases
+
+    def ok(self, text: str) -> bool:
+        toks = self._lex(text)
+        if not toks:
+            return True
+        tail_incomplete = bool(_TRAIL_WORD.search(text))
+        last_w = max((i for i, t in enumerate(toks) if t[0] == "w"), default=-1)
+        aliases = self._alias_map(toks)
 
         # pass 2: gate table positions, qualified columns, and ON join keys
         in_on = False
@@ -292,6 +299,141 @@ class SchemaPrefixGate:
                         elif c2 not in valid:
                             return False
         return True
+
+    # -- hard constraint: which identifiers can the NEXT token spell? ---------
+    def _trailing_slot(self, text: str):
+        """If the prefix's tail is a constrained identifier slot, return
+        (valid_ids, partial) -- the set of allowed identifiers and the part typed
+        so far; else None (the next token is unconstrained).
+
+        Handles both 'just entered the slot' (partial='') and 'mid-identifier'."""
+        toks = self._lex(text)
+        if not toks:
+            return None
+        aliases = self._alias_map(toks)
+        mid = bool(_TRAIL_WORD.search(text))            # currently typing an identifier
+
+        if mid:
+            w = toks[-1][1].lower()
+            # table slot: `FROM/JOIN <w`  (not EXTRACT's FROM, not a keyword)
+            if (len(toks) >= 2 and toks[-2][0] == "w" and toks[-2][1].upper() in ("FROM", "JOIN")
+                    and not (len(toks) >= 3 and toks[-3][1].upper() in _EXTRACT_FIELDS)
+                    and w.upper() not in _KW):
+                return self.tables, w
+            # qualified column: `<alias> . <w`
+            if len(toks) >= 3 and toks[-2][0] == "." and toks[-3][0] == "w":
+                q = toks[-3][1].lower()
+                if q in aliases:
+                    return self.cols.get(aliases[q], set()), w
+            return None
+
+        # between tokens -> just entered a slot (partial = "")
+        last = toks[-1]
+        if last[0] == "." and len(toks) >= 2 and toks[-2][0] == "w" \
+                and toks[-2][1].lower() in aliases:
+            return self.cols.get(aliases[toks[-2][1].lower()], set()), ""
+        if last[0] == "w" and last[1].upper() in ("FROM", "JOIN") \
+                and not (len(toks) >= 2 and toks[-2][1].upper() in _EXTRACT_FIELDS):
+            return self.tables, ""
+        return None
+
+    def allowed_next_tokens(self, text: str, tok_strings: dict[int, str]):
+        """Token ids the next step may emit. None = unconstrained (any token).
+        Otherwise: only tokens that keep the identifier on a path to a real one
+        (continue a valid prefix) or, once it's complete, a delimiter."""
+        slot = self._trailing_slot(text)
+        if slot is None:
+            return None
+        valid_ids, partial = slot
+        suffixes = {vid[len(partial):] for vid in valid_ids if vid.startswith(partial)}
+        if not suffixes:
+            return set()                                # dead end (off the gold path)
+        allow_delim = "" in suffixes                    # identifier may be complete -> delimiter
+        conts = [s for s in suffixes if s]              # still-needed continuations
+        allowed: set[int] = set()
+        for tid, s in tok_strings.items():
+            if not s:
+                continue
+            if s[0].isalnum() or s[0] == "_":           # identifier-fragment token
+                if any(suf.startswith(s) for suf in conts):
+                    allowed.add(tid)
+            elif allow_delim:                            # delimiter token
+                allowed.add(tid)
+        return allowed
+
+
+def build_token_strings(tok) -> dict[int, str]:
+    """id -> decoded text for every ordinary (non-special) token. Case is kept:
+    schema identifiers are lowercase, so matching against them case-sensitively
+    rejects uppercase token variants (which would garble the identifier)."""
+    return {i: b.decode("utf-8", "replace") for i, b in tok.vocab.items()}
+
+
+@torch.no_grad()
+def masked_beam_search(model, src, src_keep, bos, eos, gate, tok,
+                       beam=5, max_len=160, len_penalty=0.7):
+    """Beam search with HARD logit masking: at an identifier slot the next token
+    is restricted to those that spell a real schema identifier, so the model
+    physically cannot emit a hallucinated/garbled name (it picks the most likely
+    REAL one). Unconstrained positions decode normally."""
+    model.eval()
+    device = src.device
+    memory = model.encode(src, src_keep)
+    tok_strings = build_token_strings(tok)
+    beams: list[tuple[list[int], float]] = [([bos], 0.0)]
+    finished: list[tuple[list[int], float]] = []
+
+    def norm(item):
+        return item[1] / (len(item[0]) ** len_penalty)
+
+    for _ in range(max_len):
+        live = [b for b in beams if b[0][-1] != eos]
+        finished.extend(b for b in beams if b[0][-1] == eos)
+        if not live:
+            break
+        cands: list[tuple[list[int], float]] = []
+        for tokens, score in live:
+            tgt = torch.tensor([tokens], device=device)
+            h = model.decode(tgt, memory, src_keep, torch.ones_like(tgt, dtype=torch.bool))
+            logp = torch.log_softmax(model.lm_head(h[:, -1]), dim=-1)[0]
+            allowed = gate.allowed_next_tokens(tok.decode(tokens[1:]), tok_strings)
+            if allowed is not None and allowed:         # mask to allowed ids (eos excluded)
+                masked = torch.full_like(logp, _NEG)
+                idx = torch.tensor(sorted(allowed), device=device)
+                masked[idx] = logp[idx]
+                logp = masked
+            vals, ids = logp.topk(min(beam, logp.numel()))
+            for v, i in zip(vals.tolist(), ids.tolist()):
+                cands.append((tokens + [i], score + v))
+        cands.sort(key=norm, reverse=True)
+        beams = cands[:beam]
+    finished.extend(beams)
+    finished.sort(key=norm, reverse=True)
+    return finished
+
+
+def hard_generate(model, tok, src, src_keep, schema, beam=5, max_len=160):
+    """Hard-constrained decode: identifiers are guaranteed real by logit masking.
+    Returns (sql, ok) where ok = the result also passes the full graph check
+    (join keys included). Identifiers are valid by construction, so there is no
+    garbled fallback."""
+    bos, eos = tok.special("<bos>"), tok.special("<eos>")
+    gate = SchemaPrefixGate(schema)
+    graph = SchemaGraph(schema)
+    cands = masked_beam_search(model, src, src_keep, bos, eos, gate, tok,
+                               beam=beam, max_len=max_len)
+
+    def to_sql(tokens):
+        body = tokens[1:]
+        if eos in body:
+            body = body[: body.index(eos)]
+        return tok.decode(body)
+
+    for tokens, _ in cands:
+        sql = to_sql(tokens)
+        if validate_sqlglot(sql).ok and graph_check_sql(sql, graph).ok:
+            return sql, True
+    return to_sql(cands[0][0]), False
 
 
 @torch.no_grad()

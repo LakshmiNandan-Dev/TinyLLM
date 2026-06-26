@@ -1,17 +1,16 @@
 """SyntheticSchemaGenerator -- diverse, EBS-shaped synthetic schemas.
 
-For the vendor base we need MANY varied schemas (cross-schema generalization),
-but they must carry real EBS shapes or the model never learns the idioms:
-  - header / lines structure (1- and 2-hop joins)
-  - a flexfield (KFF) table: code-combination with segmentN + business labels
-  - multi-org (_ALL) striping via an org_id column
-  - lookup-coded status columns with a fixed value domain
-  - optional second dimension (extra join targets)
-
-Names are drawn from large pools + a per-schema custom prefix (simulating `XX*`
-custom schemas) + varied column naming, so train vs val seeds yield largely
-DIFFERENT identifiers -- making cross-schema eval a real test of unseen
-vocabulary, not just unseen combinations. Seeded for reproducibility.
+Three naming styles (the schema STRUCTURE is identical across all three -- only
+the identifiers differ):
+  - "default"    : generic EBS-ish nouns from large pools (varied vocabulary).
+  - "procedural" : near-unique pronounceable roots -> forces schema-linking, not
+                   memorization (train/val share almost no names).
+  - "ebs"        : REAL EBS naming conventions -- module prefixes (ap_/gl_/po_),
+                   `<module>_<entity>` dims (ap_suppliers), `<module>_<doc>_all`
+                   headers (ap_invoices_all), `<module>_<doc>_lines_all` lines,
+                   `gl_code_combinations`, and real id columns (vendor_id,
+                   invoice_id, code_combination_id, segmentN, org_id). This makes
+                   a real extracted EBS catalog IN-DISTRIBUTION for the model.
 """
 
 from __future__ import annotations
@@ -53,18 +52,43 @@ _NAME_COLS = ["{e}_name", "name", "description", "{e}_description", "title", "di
 _DIM2 = ["category", "class", "type", "region", "status_group", "source", "channel"]
 _PREFIXES = ["", "", "", "", "xx_", "xxen_", "cust_", "xxgl_"]
 
-# Procedural roots (opt-in): near-unique pronounceable identifiers so train/val
-# schemas DON'T share the core entity/doc nouns -> forces the model to link the
-# question to the serialized schema instead of memorizing a tiny noun vocabulary.
+# Procedural roots: near-unique pronounceable identifiers (forces schema-linking).
 _CONS = "bcdfgklmnprstvz"
 _VOWS = "aeiou"
 
+# Real EBS naming. Modules repeat (weighted toward the common ones); dims carry
+# their real id column (ap_suppliers' PK is vendor_id, not supplier_id).
+_EBS_MODULES = ["ap", "ar", "gl", "po", "inv", "ont", "pa", "fa", "per", "pay",
+                "wsh", "xla", "fun", "ce", "ap", "gl", "po", "ar", "inv"]
+_EBS_CUSTOM = ["xx", "xxen", "xxap", "xxgl", "cust"]
+_EBS_DIMS = [   # (table_root, pk_id, label)
+    ("suppliers", "vendor_id", "vendor"), ("vendors", "vendor_id", "vendor"),
+    ("customers", "customer_id", "customer"), ("parties", "party_id", "party"),
+    ("banks", "bank_id", "bank"), ("employees", "person_id", "employee"),
+    ("items", "inventory_item_id", "item"), ("projects", "project_id", "project"),
+    ("ledgers", "ledger_id", "ledger"), ("payees", "payee_id", "payee"),
+    ("buyers", "buyer_id", "buyer"), ("locations", "location_id", "location"),
+    ("organizations", "organization_id", "organization"),
+]
+_EBS_DOCS = [   # (plural, singular)
+    ("invoices", "invoice"), ("orders", "order"), ("payments", "payment"),
+    ("receipts", "receipt"), ("requisitions", "requisition"), ("journals", "journal"),
+    ("vouchers", "voucher"), ("shipments", "shipment"), ("transactions", "transaction"),
+    ("distributions", "distribution"), ("checks", "check"), ("accruals", "accrual"),
+]
+_EBS_AMOUNTS = [
+    "invoice_amount", "amount", "line_amount", "entered_amount", "accounted_amount",
+    "tax_amount", "gross_amount", "net_amount", "paid_amount", "base_amount",
+    "func_amount", "unpaid_amount",
+]
+
 
 class SyntheticSchemaGenerator:
-    def __init__(self, seed: int, procedural: bool = False):
+    def __init__(self, seed: int, style: str = "default"):
+        assert style in ("default", "procedural", "ebs"), style
         self.rng = random.Random(seed)
         self.seed = seed
-        self.procedural = procedural
+        self.style = style
 
     def _root(self) -> str:
         rng = self.rng
@@ -78,9 +102,21 @@ class SyntheticSchemaGenerator:
 
     def generate(self) -> Schema:
         rng = self.rng
-        prefix = rng.choice(_PREFIXES)
-        entity = self._root() if self.procedural else rng.choice(_ENTITIES)
-        doc = self._root() if self.procedural else rng.choice(_DOCS)
+        ebs = self.style == "ebs"
+
+        if ebs:
+            module = rng.choice(_EBS_MODULES)
+            if rng.random() < 0.2:                       # some custom-extension schemas
+                module = rng.choice(_EBS_CUSTOM) + module
+            prefix = module + "_"
+            entity, entity_pk, ent_label = rng.choice(_EBS_DIMS)
+            doc_plural, doc = rng.choice(_EBS_DOCS)
+            amount_pool = _EBS_AMOUNTS
+        else:
+            prefix = rng.choice(_PREFIXES)
+            entity = self._root() if self.style == "procedural" else rng.choice(_ENTITIES)
+            doc = self._root() if self.style == "procedural" else rng.choice(_DOCS)
+            entity_pk, ent_label, doc_plural, amount_pool = f"{entity}_id", entity, doc, _AMOUNTS
 
         def tn(name: str) -> str:
             return prefix + name
@@ -89,35 +125,38 @@ class SyntheticSchemaGenerator:
         fks: list[ForeignKey] = []
 
         # --- dimension: an entity table (1-hop target) ---------------------
-        entity_pk = f"{entity}_id"
-        entity_tbl = tn(entity)
-        tables.append(Table(entity_tbl, [
+        name_col = f"{ent_label}_name" if ebs else rng.choice(_NAME_COLS).format(e=entity)
+        tables.append(Table(tn(entity), [
             Column(entity_pk, ColumnType.NUMBER, is_pk=True, role=SemanticRole.ID),
-            Column(rng.choice(_NAME_COLS).format(e=entity), ColumnType.VARCHAR2, role=SemanticRole.NAME),
-            Column(f"{entity}_number", ColumnType.VARCHAR2, role=SemanticRole.CODE),
+            Column(name_col, ColumnType.VARCHAR2, role=SemanticRole.NAME),
+            Column(f"{ent_label}_number", ColumnType.VARCHAR2, role=SemanticRole.CODE),
         ]))
 
         # --- optional second dimension -------------------------------------
         include_dim2 = rng.random() < 0.5
         d2_tbl = d2_pk = None
         if include_dim2:
-            if self.procedural:
-                d2 = self._root()
-                while d2 == entity:
-                    d2 = self._root()
+            if ebs:
+                d2, d2_pk, d2_label = rng.choice([x for x in _EBS_DIMS if x[0] != entity])
             else:
-                d2 = rng.choice([x for x in _DIM2 if x != entity])
-            d2_pk, d2_tbl = f"{d2}_id", tn(d2)
+                if self.style == "procedural":
+                    d2 = self._root()
+                    while d2 == entity:
+                        d2 = self._root()
+                else:
+                    d2 = rng.choice([x for x in _DIM2 if x != entity])
+                d2_pk, d2_label = f"{d2}_id", d2
+            d2_tbl = tn(d2)
             tables.append(Table(d2_tbl, [
                 Column(d2_pk, ColumnType.NUMBER, is_pk=True, role=SemanticRole.ID),
-                Column(f"{d2}_name", ColumnType.VARCHAR2, role=SemanticRole.NAME),
+                Column(f"{d2_label}_name", ColumnType.VARCHAR2, role=SemanticRole.NAME),
             ]))
 
         # --- optional flexfield (KFF) code-combination ---------------------
         include_flex = rng.random() < 0.6
         cc_tbl = None
         if include_flex:
-            cc_tbl = tn("code_combinations")
+            cc_tbl = "gl_code_combinations" if ebs else tn("code_combinations")
             n_seg = rng.randint(2, 5)
             labels = rng.sample(_SEGMENT_LABELS, n_seg)
             seg = [
@@ -132,22 +171,34 @@ class SyntheticSchemaGenerator:
         # --- header (_ALL multi-org) document table ------------------------
         multi_org = rng.random() < 0.8
         status_type = rng.choice(list(_STATUSES))
-        header = tn(f"{doc}_headers_all" if multi_org else f"{doc}_headers")
+        if ebs:
+            header = tn(f"{doc_plural}_all" if multi_org else doc_plural)
+            status_col = f"{doc}_type_lookup_code"
+        else:
+            header = tn(f"{doc}_headers_all" if multi_org else f"{doc}_headers")
+            status_col = status_type.lower() + "_code"
         header_pk = f"{doc}_id"
         cols = [
             Column(header_pk, ColumnType.NUMBER, is_pk=True, role=SemanticRole.ID),
             Column(entity_pk, ColumnType.NUMBER, role=SemanticRole.ID),
             Column(f"{doc}_date", ColumnType.DATE, role=SemanticRole.DATE),
-            Column(rng.choice(_AMOUNTS), ColumnType.NUMBER, role=SemanticRole.AMOUNT),
-            Column(status_type.lower() + "_code", ColumnType.VARCHAR2, role=SemanticRole.LOOKUP,
+            Column(rng.choice(amount_pool), ColumnType.NUMBER, role=SemanticRole.AMOUNT),
+            Column(status_col, ColumnType.VARCHAR2, role=SemanticRole.LOOKUP,
                    lookup_type=status_type, allowed_values=_STATUSES[status_type]),
         ]
+        if ebs:                                          # real EBS audit/header columns
+            cols.insert(1, Column(f"{doc}_num", ColumnType.VARCHAR2, role=SemanticRole.CODE))
+            cols.append(Column("creation_date", ColumnType.DATE, role=SemanticRole.DATE))
+            if rng.random() < 0.5:
+                cols.append(Column("payment_status_flag", ColumnType.VARCHAR2,
+                                   role=SemanticRole.LOOKUP, lookup_type="PAYMENT_STATUS",
+                                   allowed_values=("Y", "N", "P")))
         if include_dim2:
             cols.insert(2, Column(d2_pk, ColumnType.NUMBER, role=SemanticRole.ID))
         if multi_org:
             cols.insert(2, Column("org_id", ColumnType.NUMBER, role=SemanticRole.ORG_ID))
         tables.append(Table(header, cols, is_multi_org=multi_org))
-        fks.append(ForeignKey(header, entity_pk, entity_tbl, entity_pk))
+        fks.append(ForeignKey(header, entity_pk, tn(entity), entity_pk))
         if include_dim2:
             fks.append(ForeignKey(header, d2_pk, d2_tbl, d2_pk))
 
@@ -157,7 +208,7 @@ class SyntheticSchemaGenerator:
             lcols = [
                 Column(f"{doc}_line_id", ColumnType.NUMBER, is_pk=True, role=SemanticRole.ID),
                 Column(header_pk, ColumnType.NUMBER, role=SemanticRole.ID),
-                Column(rng.choice(_AMOUNTS), ColumnType.NUMBER, role=SemanticRole.AMOUNT),
+                Column(rng.choice(amount_pool), ColumnType.NUMBER, role=SemanticRole.AMOUNT),
             ]
             if rng.random() < 0.5:
                 lcols.append(Column(rng.choice(_QTYS), ColumnType.NUMBER, role=SemanticRole.QUANTITY))

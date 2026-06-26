@@ -8,9 +8,11 @@ from .catalog import (
     RawLookup,
 )
 from .extractor import EbsExtractor
+from .run import extract_schema
 
 __all__ = [
     "EbsExtractor",
+    "extract_schema",
     "CatalogSource",
     "MockCatalog",
     "OracleCatalog",

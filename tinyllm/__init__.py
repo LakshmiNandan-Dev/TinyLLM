@@ -5,8 +5,8 @@ base; extracted for customer-local specialization) into validated
 (schema, question, SQL) training triples.
 """
 
-from .pipeline import Example, generate_example, serialize_schema
+from .pipeline import Example, example_from_schema, generate_example, serialize_schema
 
-__all__ = ["Example", "generate_example", "serialize_schema"]
+__all__ = ["Example", "generate_example", "example_from_schema", "serialize_schema"]
 
 __version__ = "0.0.1"

@@ -280,13 +280,19 @@ class QuerySampler:
                 break  # disconnected (should not happen for join_tree output)
         return joins
 
-    @staticmethod
-    def _aliases(tables: list[str]) -> dict[str, str]:
+    # short SQL keywords that must never be used as a bare table alias
+    _RESERVED_ALIAS = {
+        "as", "is", "in", "on", "or", "by", "to", "of", "at", "if", "no",
+        "all", "and", "any", "asc", "end", "for", "not", "set", "sum", "min", "max",
+    }
+
+    @classmethod
+    def _aliases(cls, tables: list[str]) -> dict[str, str]:
         aliases, used = {}, set()
         for name in tables:
             base = "".join(part[0] for part in name.split("_") if part)[:3] or name[:2]
             alias, i = base, 1
-            while alias in used:
+            while alias in used or alias in cls._RESERVED_ALIAS:
                 i += 1
                 alias = f"{base}{i}"
             used.add(alias)

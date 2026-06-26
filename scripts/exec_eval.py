@@ -36,8 +36,8 @@ def main():
     ap.add_argument("--max-len", type=int, default=120)
     ap.add_argument("--ckpt", default="artifacts/model_best.pt")
     ap.add_argument("--tok", default="artifacts/tokenizer.json")
-    ap.add_argument("--procedural", action="store_true",
-                    help="match a procedurally-trained checkpoint's val distribution")
+    ap.add_argument("--style", choices=("default", "procedural", "ebs"), default="default",
+                    help="match the checkpoint's training name distribution")
     args = ap.parse_args()
 
     tok = BPETokenizer.load(args.tok)
@@ -51,7 +51,7 @@ def main():
 
     for i in range(args.n):
         seed = VAL_OFFSET + i
-        ex = generate_example(seed, level=LEVELS[i % len(LEVELS)], procedural=args.procedural)
+        ex = generate_example(seed, level=LEVELS[i % len(LEVELS)], style=args.style)
         schema_str = serialize_schema(ex.schema)
         harness = ExecHarness(ex.schema, seed=seed)
         gr, gerr = harness.rows(ex.sql)

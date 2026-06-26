@@ -38,8 +38,8 @@ def main():
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--batch-size", type=int, default=48)
     ap.add_argument("--paraphrases", type=int, default=2)
-    ap.add_argument("--procedural", action="store_true",
-                    help="near-unique entity/doc names -> forces schema-linking, not memorization")
+    ap.add_argument("--style", choices=("default", "procedural", "ebs"), default="default",
+                    help="naming: default | procedural (forces linking) | ebs (real EBS names)")
     ap.add_argument("--vocab", type=int, default=2048)
     ap.add_argument("--d-model", type=int, default=256)
     ap.add_argument("--dropout", type=float, default=0.0)
@@ -54,9 +54,9 @@ def main():
     torch.manual_seed(0)
 
     print(f"building split: {args.train} train schemas, {args.val} unseen val schemas "
-          f"{'(procedural names)' if args.procedural else ''}...")
+          f"(style={args.style}) ...")
     train_pairs, val_pairs = make_split(args.train, args.val, paraphrases=args.paraphrases,
-                                        procedural=args.procedural)
+                                        style=args.style)
     print(f"  {len(train_pairs):,} train pairs (with paraphrases), {len(val_pairs)} val pairs")
 
     tok = BPETokenizer().train(corpus_texts(train_pairs), vocab_size=args.vocab)
