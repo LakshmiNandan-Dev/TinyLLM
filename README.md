@@ -145,6 +145,22 @@ Interfaces (`SchemaGraph`, `QuerySampler`, the catalog source, the DB connection
 are clean swap points so native/compiled or real-Oracle implementations drop in
 without touching callers — the toolkit ships as auditable source.
 
+## Deployment
+
+The bundled `tinyllm serve` (FastAPI + web UI) is the reference server and runs
+the whole gate chain. For other targets:
+
+- **Portable / air-gapped (ONNX):** `scripts/export_onnx.py` exports the encoder
+  and decoder-step as two stateless ONNX graphs; ship them + `tokenizer.json` +
+  the schema JSONs and run the orchestration loop under `onnxruntime` (no torch).
+- **Fleet ops (Triton):** host the two ONNX graphs on Triton's onnxruntime
+  backend and the pipeline (retrieve → gated decode → repair) in a Triton
+  **Python-backend** orchestrator — see [deploy/triton/](deploy/triton/). Only
+  the tensor ops go to Triton; all schema-aware logic is reused from `tinyllm`.
+- **Not a fit:** Ollama / vLLM expect *decoder-only* models in GGUF / registered
+  HF formats — this is a custom encoder-decoder with a custom tokenizer and a
+  graph-constrained decoder, so neither hosts it without reimplementation.
+
 ## What's solid / what's left
 
 **Solid (built + tested):** the from-scratch data engine, tokenizer, and model;

@@ -13,7 +13,8 @@ dependencies = [
 dev = ["pytest>=8"]
 model = ["torch>=2.2"]
 serve = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2"]
-oracle = ["oracledb>=2"]   # live customer-side EBS extraction
+oracle = ["oracledb>=2"]              # live customer-side EBS extraction
+onnx = ["onnx>=1.15", "onnxruntime>=1.17"]   # portable export (scripts/export_onnx.py)
 
 [project.scripts]
 tinyllm = "tinyllm.cli:main"
