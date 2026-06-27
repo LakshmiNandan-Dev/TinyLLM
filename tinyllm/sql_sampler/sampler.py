@@ -49,11 +49,30 @@ class QuerySampler:
             return self._sample_l4(fact)
         return self._sample_l5(fact)
 
-    # -- L2: aggregate + group by ---------------------------------------
-    def _sample_l2(self, fact: Table) -> tuple[SelectQuery, list[str]]:
+    # -- L2: aggregate (+ group by) -------------------------------------
+    def _pick_aggregate(self, fact: Table) -> Aggregate:
+        """A varied measure: SUM/AVG/MAX/MIN over an amount, or COUNT of rows."""
+        func = self.rng.choices(["SUM", "AVG", "COUNT", "MAX", "MIN"],
+                                weights=[5, 2, 2, 1, 1])[0]
+        if func == "COUNT":
+            col = fact.primary_key or fact.columns[0]
+        else:
+            col = self.rng.choice(fact.by_role(SemanticRole.AMOUNT))
+        return Aggregate(func, ColumnRef(fact.name, col))
+
+    def _sample_l2(self, fact: Table, allow_no_group: bool = True) -> tuple[SelectQuery, list[str]]:
         rng = self.rng
         features: list[str] = []
-        amount_col = rng.choice(fact.by_role(SemanticRole.AMOUNT))
+        agg = self._pick_aggregate(fact)
+        features.append(agg.func.lower())
+
+        # ungrouped total ("how many invoices", "total invoice amount", "average amount")
+        if allow_no_group and rng.random() < 0.3:
+            query = SelectQuery(from_table=fact.name, aliases=self._aliases([fact.name]),
+                                select=[agg])
+            features.append("no_group")
+            self._add_filters(query, fact, features)
+            return query, features
 
         group_table, group_col = self._pick_group(fact)
         join_targets = [fact.name] if group_table == fact.name else [fact.name, group_table]
@@ -69,10 +88,7 @@ class QuerySampler:
         query = SelectQuery(
             from_table=fact.name,
             aliases=aliases,
-            select=[
-                ColumnRef(group_table, group_col),
-                Aggregate("SUM", ColumnRef(fact.name, amount_col)),
-            ],
+            select=[ColumnRef(group_table, group_col), agg],
             joins=joins,
             group_by=[ColumnRef(group_table, group_col)],
         )
@@ -81,7 +97,7 @@ class QuerySampler:
 
     # -- L3: HAVING or top-N (extends L2) -------------------------------
     def _sample_l3(self, fact: Table) -> tuple[SelectQuery, list[str]]:
-        query, features = self._sample_l2(fact)
+        query, features = self._sample_l2(fact, allow_no_group=False)
         agg = next((it for it in query.select if isinstance(it, Aggregate)), None)
         if agg is None:
             return query, features

@@ -11,13 +11,21 @@ from __future__ import annotations
 
 # -- measure phrasing, by aggregate function -------------------------------
 MEASURE = {
-    "SUM": ["total {m}", "the total {m}", "sum of {m}", "overall {m}"],
-    "AVG": ["average {m}", "the average {m}", "mean {m}"],
-    "COUNT": ["number of {m}", "count of {m}"],
+    "SUM": ["total {m}", "the total {m}", "sum of {m}", "overall {m}", "aggregate {m}"],
+    "AVG": ["average {m}", "the average {m}", "mean {m}", "avg {m}"],
+    "MAX": ["highest {m}", "maximum {m}", "max {m}", "the highest {m}", "largest {m}"],
+    "MIN": ["lowest {m}", "minimum {m}", "min {m}", "the lowest {m}", "smallest {m}"],
 }
+# COUNT counts rows of a thing, so it phrases on the entity, not a measure column.
+# Noun phrases only, so they compose inside the interrogative frames below.
+COUNT_MEASURE = ["number of {d}", "count of {d}", "the number of {d}", "total number of {d}"]
+
+# ungrouped totals ("what is the total amount", "number of invoices")
+NOGROUP = ["{measure}", "what is the {measure}?", "what's the {measure}?",
+           "show me the {measure}", "give me the {measure}", "{measure} overall"]
 
 # -- grouping connectives --------------------------------------------------
-GROUP = ["by {g}", "per {g}", "for each {g}", "grouped by {g}", "broken down by {g}"]
+GROUP = ["by {g}", "per {g}", "for each {g}", "grouped by {g}", "broken down by {g}", "across {g}"]
 
 # -- aggregate sentence frames ({measure} and {group} are pre-built) -------
 AGG_FRAMES = [
@@ -25,8 +33,11 @@ AGG_FRAMES = [
     "show me {measure} {group}",
     "give me {measure} {group}",
     "what is {measure} {group}?",
+    "what's the {measure} {group}?",
     "breakdown of {measure} {group}",
     "calculate {measure} {group}",
+    "{measure} broken down {group}",
+    "find {measure} {group}",
 ]
 
 # -- top-N -----------------------------------------------------------------

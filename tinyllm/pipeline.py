@@ -10,6 +10,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
+from .nl import llm_paraphrases
 from .nl import paraphrases as make_paraphrases
 from .nl import render_question
 from .render import render_oracle
@@ -53,6 +54,8 @@ def example_from_schema(schema: Schema, rng: random.Random, level: int = 2,
     phrases: list[str] = []
     if n_paraphrases > 0:
         phrases = make_paraphrases(ast, n_paraphrases, para_rng or random.Random())
+        # vendor-side LLM paraphrases stack on top (no-op air-gap default)
+        phrases = list(dict.fromkeys(phrases + llm_paraphrases(question, n_paraphrases)))
     return Example(
         schema=schema, level=level, question=question, sql=sql, ast=ast,
         ebs_features=features, validations=validations, paraphrases=phrases,

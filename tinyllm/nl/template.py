@@ -17,6 +17,15 @@ from ..sql_sampler.ast import (
     Subquery,
     WindowFunc,
 )
+from .lexicon import entity_label, pluralize
+
+_AGG_WORD = {"SUM": "total", "AVG": "average", "MAX": "highest", "MIN": "lowest"}
+
+
+def _measure(agg: Aggregate, from_table: str) -> str:
+    if agg.func == "COUNT":
+        return "number of " + pluralize(entity_label(from_table))
+    return f"{_AGG_WORD.get(agg.func, 'total')} {agg.column.column.label}"
 
 
 def render_question(q: SelectQuery) -> str:
@@ -35,17 +44,19 @@ def render_question(q: SelectQuery) -> str:
 
 
 def _aggregate_question(q: SelectQuery, agg: Aggregate) -> str:
-    measure = agg.column.column.label
+    mphrase = _measure(agg, q.from_table)
     group = " and ".join(c.column.label for c in q.group_by) if q.group_by else None
 
     if q.limit and q.order_by:
-        text = f"top {q.limit} {group} by {measure}" if group else f"top {q.limit} by {measure}"
+        text = f"top {q.limit} {group} by {mphrase}" if group else f"top {q.limit} by {mphrase}"
+    elif group:
+        text = f"{mphrase} by {group}"
     else:
-        text = f"total {measure}" + (f" by {group}" if group else "")
+        text = mphrase
 
     if q.having:
         h = q.having[0]
-        text += f" with total {h.agg.column.column.label} over {h.value}"
+        text += f" with {_measure(h.agg, q.from_table)} over {h.value}"
     return text + _filters_phrase(q.where)
 
 

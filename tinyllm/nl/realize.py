@@ -50,16 +50,15 @@ def paraphrases(ast: SelectQuery, k: int, rng: random.Random) -> list[str]:
 
 # -- per-shape realizers ---------------------------------------------------
 def _aggregate(q: SelectQuery, agg: Aggregate, rng: random.Random) -> str:
-    measure_label = agg.column.column.label
     if q.limit and q.order_by and q.group_by:
         g = " and ".join(lx.group_label(c.column.label) for c in q.group_by)
-        base = rng.choice(lx.TOPN).format(n=q.limit, g=lx.pluralize(g), m=measure_label)
+        base = rng.choice(lx.TOPN).format(n=q.limit, g=lx.pluralize(g), m=_topn_measure(agg, q))
     elif q.group_by:
         base = rng.choice(lx.AGG_FRAMES).format(
-            measure=_measure(agg, rng), group=_group(q, rng)
+            measure=_measure(agg, q, rng), group=_group(q, rng)
         )
     else:
-        base = _measure(agg, rng)
+        base = rng.choice(lx.NOGROUP).format(measure=_measure(agg, q, rng))
 
     if q.having:
         h = q.having[0]
@@ -94,9 +93,17 @@ def _list(q: SelectQuery, rng: random.Random) -> str:
 
 
 # -- shared pieces ---------------------------------------------------------
-def _measure(agg: Aggregate, rng: random.Random) -> str:
+def _measure(agg: Aggregate, q: SelectQuery, rng: random.Random) -> str:
+    if agg.func == "COUNT":
+        return rng.choice(lx.COUNT_MEASURE).format(d=lx.pluralize(lx.entity_label(q.from_table)))
     frames = lx.MEASURE.get(agg.func, ["{m}"])
     return rng.choice(frames).format(m=agg.column.column.label)
+
+
+def _topn_measure(agg: Aggregate, q: SelectQuery) -> str:
+    if agg.func == "COUNT":
+        return lx.pluralize(lx.entity_label(q.from_table))
+    return agg.column.column.label
 
 
 def _group(q: SelectQuery, rng: random.Random) -> str:
