@@ -71,3 +71,22 @@ def test_fastapi_app_smoke():
     assert ok.status_code == 200 and "rows" in ok.json()
     blocked = client.post("/execute", json={"schema_id": "demo", "sql": "DROP TABLE x"})
     assert blocked.status_code == 400                              # read-only refuses writes
+
+
+def test_admin_extract_and_status(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from tinyllm.serve import build_app
+    service, _ = _service()
+    admin = {"schemas_dir": str(tmp_path / "sch"), "models_dir": str(tmp_path / "mod"),
+             "base_ckpt": "base.pt", "base_tok": "base.json"}
+    client = TestClient(build_app(service, admin=admin))
+
+    assert "Setup" in client.get("/setup").text
+    r = client.post("/admin/extract", json={"schema_id": "ebs", "mock": True})
+    assert r.status_code == 200
+    assert any(t["name"] == "ap_invoices_all" for t in r.json()["tables"])
+    assert "ebs" in service.schema_ids()                           # registered at runtime
+    assert client.get("/admin/train/status").json()["state"] == "idle"

@@ -67,6 +67,20 @@ class QueryService:
     def schema_ids(self) -> list[str]:
         return list(self.schemas)
 
+    def add_schema(self, schema_id: str, schema: Schema, db: Optional[DbConnection] = None):
+        """Register a newly-extracted schema at runtime (admin extract)."""
+        self.schemas[schema_id] = schema
+        self.graphs[schema_id] = SchemaGraph(schema)
+        if db is not None:
+            self.dbs[schema_id] = db
+
+    def reload_model(self, ckpt: str, tok_path: str):
+        """Hot-swap to a freshly fine-tuned checkpoint (admin train completion)."""
+        from ..tokenizer import BPETokenizer
+        from ..train import load_model
+        self.model = load_model(ckpt, device=self.device)
+        self.tok = BPETokenizer.load(tok_path)
+
     def _check(self, schema_id: str):
         if schema_id not in self.schemas:
             raise KeyError(f"unknown schema_id {schema_id!r}; have {self.schema_ids()}")

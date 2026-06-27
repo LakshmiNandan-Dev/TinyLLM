@@ -24,8 +24,10 @@ from tinyllm.serve import QueryService, build_app  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default="artifacts/model_best.pt")
+    ap.add_argument("--ckpt", default="artifacts/model_best.pt", help="model to SERVE")
     ap.add_argument("--tok", default="artifacts/tokenizer.json")
+    ap.add_argument("--base", default="artifacts/model_best.pt", help="vendor base for admin fine-tunes")
+    ap.add_argument("--base-tok", default="artifacts/tokenizer.json")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
@@ -40,8 +42,13 @@ def main():
     service = QueryService.from_files(args.ckpt, args.tok, schemas, dbs=dbs)
     print(f"loaded {len(schemas)} schemas: {service.schema_ids()}")
 
+    # admin fine-tunes always start from the VENDOR BASE (not whatever is served)
+    admin = {"schemas_dir": "artifacts/customer_schemas",
+             "models_dir": "artifacts/customer_models",
+             "base_ckpt": args.base, "base_tok": args.base_tok}
+
     import uvicorn
-    uvicorn.run(build_app(service), host=args.host, port=args.port)
+    uvicorn.run(build_app(service, admin=admin), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
