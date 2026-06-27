@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 
 from ..db import DbConnection
-from ..decode import graph_check_sql, picard_generate
+from ..decode import graph_check_sql, picard_generate, schema_repair
 from ..model import collate
 from ..pipeline import serialize_schema
 from ..retrieve import link_tables
@@ -84,6 +84,7 @@ class QueryService:
             self.model, self.tok, batch["src"], batch["src_keep"],
             schema, beam=self.beam, max_len=self.max_len,
         )
+        sql = schema_repair(sql, question, schema)                   # fix semantic slips
         valid = graph_check_sql(sql, self.graphs[schema_id]).ok is True
 
         explain_ok = None

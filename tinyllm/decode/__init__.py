@@ -9,6 +9,7 @@ from .constrained import (
     picard_beam_search,
     picard_generate,
 )
+from .repair import schema_repair
 
 __all__ = [
     "graph_check_sql",
@@ -20,4 +21,5 @@ __all__ = [
     "build_token_strings",
     "masked_beam_search",
     "hard_generate",
+    "schema_repair",
 ]
