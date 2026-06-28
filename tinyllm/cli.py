@@ -29,12 +29,18 @@ def _demo_registry(with_dbs: bool = True):
 
 
 def _serve(args):
+    import os
+
     from .serve import QueryService, build_app
     schemas, dbs = _demo_registry()
     service = QueryService.from_files(args.ckpt, args.tok, schemas, dbs=dbs)
-    print(f"serving {service.schema_ids()} on http://{args.host}:{args.port}")
+    # admin console (extract + fine-tune) writes to a persistable data dir
+    admin = {"schemas_dir": os.path.join(args.data, "schemas"),
+             "models_dir": os.path.join(args.data, "models"),
+             "base_ckpt": args.ckpt, "base_tok": args.tok}
+    print(f"serving {service.schema_ids()} on http://{args.host}:{args.port}  (setup at /setup)")
     import uvicorn
-    uvicorn.run(build_app(service), host=args.host, port=args.port)
+    uvicorn.run(build_app(service, admin=admin), host=args.host, port=args.port)
 
 
 def _query(args):
@@ -115,9 +121,10 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="tinyllm", description="NL -> Oracle EBS SQL toolkit")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("serve", help="run the service + web UI")
+    s = sub.add_parser("serve", help="run the service + web UI + setup console")
     s.add_argument("--ckpt", default="artifacts/model_best.pt")
     s.add_argument("--tok", default="artifacts/tokenizer.json")
+    s.add_argument("--data", default="artifacts", help="persistable dir for extracted schemas + customer models")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8000)
     s.set_defaults(func=_serve)
