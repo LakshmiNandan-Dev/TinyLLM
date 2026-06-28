@@ -76,3 +76,81 @@ def test_extracted_schema_flows_through_pipeline():
     for level in (1, 2, 3):
         ast, _ = QuerySampler(g, random.Random(0)).sample(level)
         assert validate_graph(ast, g).ok
+
+
+# -- live OracleCatalog (bulk reads, no Oracle): a fake cursor returns canned
+#    set-based rows so the grouping + caching is proven without a database -------
+_TABLES = [                                  # (synonym_name, table_owner, table_name)
+    ("AP_INVOICES_ALL", "AP", "AP_INVOICES_ALL"),
+    ("AP_SUPPLIERS", "AP", "PO_VENDORS"),    # synonym name != base table (APPS layer)
+    ("GL_CODE_COMBINATIONS", "GL", "GL_CODE_COMBINATIONS"),
+]
+_COLS = [                                    # (synonym_name, column, type, nullable)
+    ("AP_INVOICES_ALL", "INVOICE_ID", "NUMBER", "N"),
+    ("AP_INVOICES_ALL", "VENDOR_ID", "NUMBER", "Y"),
+    ("AP_INVOICES_ALL", "INVOICE_AMOUNT", "NUMBER", "Y"),
+    ("AP_SUPPLIERS", "VENDOR_ID", "NUMBER", "N"),
+    ("AP_SUPPLIERS", "VENDOR_NAME", "VARCHAR2", "Y"),
+    ("GL_CODE_COMBINATIONS", "CODE_COMBINATION_ID", "NUMBER", "N"),
+    ("GL_CODE_COMBINATIONS", "SEGMENT1", "VARCHAR2", "Y"),
+    ("ZZ_VIEW_SYNONYM", "X", "NUMBER", "Y"),  # synonym not in the table list -> dropped
+]
+_PKS = [
+    ("AP_INVOICES_ALL", "INVOICE_ID"),
+    ("AP_SUPPLIERS", "VENDOR_ID"),
+    ("GL_CODE_COMBINATIONS", "CODE_COMBINATION_ID"),
+]
+
+
+class _FakeCursor:
+    """Routes each OracleCatalog bulk query to canned rows by a distinctive token."""
+
+    def __init__(self):
+        self._rows: list = []
+        self.table_query_count = 0
+
+    def execute(self, sql, bind=None):
+        if "all_tab_columns" in sql:
+            self._rows = _COLS
+        elif "constraint_type = 'P'" in sql:
+            self._rows = _PKS
+        elif "constraint_type = 'R'" in sql:
+            self._rows = []                  # EBS declares no FKs
+        elif "all_tables t" in sql:          # the table-list query
+            self.table_query_count += 1
+            self._rows = _TABLES
+        else:
+            self._rows = []
+
+    def fetchall(self):
+        return self._rows
+
+
+def test_oracle_catalog_bulk_grouping_and_caching():
+    from tinyllm.extract.catalog import OracleCatalog
+    cur = _FakeCursor()
+    cat = OracleCatalog(cur)
+
+    # synonym names are the canonical (lowercased) table names
+    assert cat.tables() == ["ap_invoices_all", "ap_suppliers", "gl_code_combinations"]
+    # columns grouped by synonym, lowercased, nullable decoded
+    cols = {c.name: c for c in cat.columns("ap_invoices_all")}
+    assert set(cols) == {"invoice_id", "vendor_id", "invoice_amount"}
+    assert cols["invoice_id"].nullable is False and cols["vendor_id"].nullable is True
+    assert cat.primary_key("gl_code_combinations") == ["code_combination_id"]
+    # a synonym that appears in columns but not in the table list is ignored
+    assert "zz_view_synonym" not in cat.tables()
+    # bulk read happens ONCE and is cached -- not re-queried per accessor call
+    cat.columns("ap_suppliers"); cat.primary_key("ap_invoices_all"); cat.tables()
+    assert cur.table_query_count == 1
+
+
+def test_oracle_catalog_flows_through_extractor():
+    """End to end on the bulk adapter: extract() infers the join graph from the
+    bulk-read metadata exactly as it does for the mock."""
+    from tinyllm.extract.catalog import OracleCatalog
+    s = EbsExtractor(OracleCatalog(_FakeCursor())).extract()
+    assert set(s.table_names) == {"ap_invoices_all", "ap_suppliers", "gl_code_combinations"}
+    edges = {(fk.from_table, fk.from_column, fk.to_table, fk.to_column)
+             for fk in s.foreign_keys}
+    assert ("ap_invoices_all", "vendor_id", "ap_suppliers", "vendor_id") in edges
