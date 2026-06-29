@@ -78,27 +78,39 @@ def test_extracted_schema_flows_through_pipeline():
         assert validate_graph(ast, g).ok
 
 
-# -- live OracleCatalog (bulk reads, no Oracle): a fake cursor returns canned
-#    set-based rows so the grouping + caching is proven without a database -------
-_TABLES = [                                  # (synonym_name, table_owner, table_name)
+# -- live OracleCatalog (HYBRID, no Oracle): a fake cursor returns canned set-
+#    based rows so the table list (ALL_TABLES) + canonical APPS-synonym rename +
+#    skip-list + caching are all proven without a database --------------------
+_TABLES = [                                  # ALL_TABLES rows: (owner, table_name)
+    ("AP", "AP_INVOICES_ALL"),
+    ("AP", "PO_VENDORS"),                    # base table; APPS renames it ap_suppliers
+    ("GL", "GL_CODE_COMBINATIONS"),
+    ("XXCUST", "XX_CUSTOM_TABLE"),           # custom: NO synonym -> kept owner-qualified
+    ("AP", "AP_STUFF$TMP"),                  # technical ('$') -> skipped
+    ("GL", "GL_BALANCES_BAK"),               # backup suffix -> skipped
+]
+_SYNS = [                                    # (synonym_name, table_owner, table_name)
     ("AP_INVOICES_ALL", "AP", "AP_INVOICES_ALL"),
-    ("AP_SUPPLIERS", "AP", "PO_VENDORS"),    # synonym name != base table (APPS layer)
+    ("AP_SUPPLIERS", "AP", "PO_VENDORS"),    # canonical name != base table
     ("GL_CODE_COMBINATIONS", "GL", "GL_CODE_COMBINATIONS"),
 ]
-_COLS = [                                    # (synonym_name, column, type, nullable)
-    ("AP_INVOICES_ALL", "INVOICE_ID", "NUMBER", "N"),
-    ("AP_INVOICES_ALL", "VENDOR_ID", "NUMBER", "Y"),
-    ("AP_INVOICES_ALL", "INVOICE_AMOUNT", "NUMBER", "Y"),
-    ("AP_SUPPLIERS", "VENDOR_ID", "NUMBER", "N"),
-    ("AP_SUPPLIERS", "VENDOR_NAME", "VARCHAR2", "Y"),
-    ("GL_CODE_COMBINATIONS", "CODE_COMBINATION_ID", "NUMBER", "N"),
-    ("GL_CODE_COMBINATIONS", "SEGMENT1", "VARCHAR2", "Y"),
-    ("ZZ_VIEW_SYNONYM", "X", "NUMBER", "Y"),  # synonym not in the table list -> dropped
+_COLS = [                                    # (owner, table, column, type, nullable)
+    ("AP", "AP_INVOICES_ALL", "INVOICE_ID", "NUMBER", "N"),
+    ("AP", "AP_INVOICES_ALL", "VENDOR_ID", "NUMBER", "Y"),
+    ("AP", "AP_INVOICES_ALL", "INVOICE_AMOUNT", "NUMBER", "Y"),
+    ("AP", "PO_VENDORS", "VENDOR_ID", "NUMBER", "N"),
+    ("AP", "PO_VENDORS", "VENDOR_NAME", "VARCHAR2", "Y"),
+    ("GL", "GL_CODE_COMBINATIONS", "CODE_COMBINATION_ID", "NUMBER", "N"),
+    ("GL", "GL_CODE_COMBINATIONS", "SEGMENT1", "VARCHAR2", "Y"),
+    ("XXCUST", "XX_CUSTOM_TABLE", "CUSTOM_ID", "NUMBER", "N"),
+    ("XXCUST", "XX_CUSTOM_TABLE", "NOTE", "VARCHAR2", "Y"),
+    ("AP", "AP_STUFF$TMP", "X", "NUMBER", "Y"),   # skipped table -> columns dropped
 ]
 _PKS = [
-    ("AP_INVOICES_ALL", "INVOICE_ID"),
-    ("AP_SUPPLIERS", "VENDOR_ID"),
-    ("GL_CODE_COMBINATIONS", "CODE_COMBINATION_ID"),
+    ("AP", "AP_INVOICES_ALL", "INVOICE_ID"),
+    ("AP", "PO_VENDORS", "VENDOR_ID"),
+    ("GL", "GL_CODE_COMBINATIONS", "CODE_COMBINATION_ID"),
+    ("XXCUST", "XX_CUSTOM_TABLE", "CUSTOM_ID"),
 ]
 
 
@@ -116,7 +128,9 @@ class _FakeCursor:
             self._rows = _PKS
         elif "constraint_type = 'R'" in sql:
             self._rows = []                  # EBS declares no FKs
-        elif "all_tables t" in sql:          # the table-list query
+        elif "all_synonyms" in sql:          # the synonym overlay
+            self._rows = _SYNS
+        elif "all_tables" in sql:            # the table-list query
             self.table_query_count += 1
             self._rows = _TABLES
         else:
@@ -126,31 +140,49 @@ class _FakeCursor:
         return self._rows
 
 
-def test_oracle_catalog_bulk_grouping_and_caching():
+def test_oracle_catalog_hybrid_naming_skip_and_caching():
     from tinyllm.extract.catalog import OracleCatalog
     cur = _FakeCursor()
     cat = OracleCatalog(cur)
 
-    # synonym names are the canonical (lowercased) table names
-    assert cat.tables() == ["ap_invoices_all", "ap_suppliers", "gl_code_combinations"]
-    # columns grouped by synonym, lowercased, nullable decoded
-    cols = {c.name: c for c in cat.columns("ap_invoices_all")}
-    assert set(cols) == {"invoice_id", "vendor_id", "invoice_amount"}
-    assert cols["invoice_id"].nullable is False and cols["vendor_id"].nullable is True
-    assert cat.primary_key("gl_code_combinations") == ["code_combination_id"]
-    # a synonym that appears in columns but not in the table list is ignored
-    assert "zz_view_synonym" not in cat.tables()
+    # base PO_VENDORS surfaced under its canonical APPS synonym; the synonym-less
+    # custom table is kept (owner-qualified); '$' and *_BAK tables are skipped
+    assert cat.tables() == [
+        "ap_invoices_all", "ap_suppliers", "gl_code_combinations", "xxcust.xx_custom_table"
+    ]
+    # the renamed base table's columns come back under the canonical name
+    cols = {c.name: c for c in cat.columns("ap_suppliers")}
+    assert set(cols) == {"vendor_id", "vendor_name"}
+    assert cols["vendor_id"].nullable is False
+    # synonym-less custom table IS captured (not missed) under owner.table
+    assert {c.name for c in cat.columns("xxcust.xx_custom_table")} == {"custom_id", "note"}
+    assert cat.primary_key("ap_suppliers") == ["vendor_id"]
+    # technical tables never appear
+    assert not any("$" in t or t.endswith("_bak") for t in cat.tables())
     # bulk read happens ONCE and is cached -- not re-queried per accessor call
-    cat.columns("ap_suppliers"); cat.primary_key("ap_invoices_all"); cat.tables()
+    cat.columns("ap_invoices_all"); cat.primary_key("ap_suppliers"); cat.tables()
     assert cur.table_query_count == 1
 
 
+def test_extra_owners_are_sanitized_into_scope():
+    """Custom owners are inlined into the scope subquery, so they must be stripped
+    to bare identifiers (no SQL injection)."""
+    from tinyllm.extract.catalog import OracleCatalog
+    cat = OracleCatalog(_FakeCursor(), extra_owners=["XXCUST", "evil'; DROP TABLE x--"])
+    scope = cat._sql["tables"]
+    assert "'XXCUST'" in scope                 # clean owner inlined
+    assert "EVILDROPTABLEX" in scope          # non-identifier chars removed, upper-cased
+    assert "DROP TABLE" not in scope and "--" not in scope and "';" not in scope
+
+
 def test_oracle_catalog_flows_through_extractor():
-    """End to end on the bulk adapter: extract() infers the join graph from the
+    """End to end on the hybrid adapter: extract() infers the join graph from the
     bulk-read metadata exactly as it does for the mock."""
     from tinyllm.extract.catalog import OracleCatalog
     s = EbsExtractor(OracleCatalog(_FakeCursor())).extract()
-    assert set(s.table_names) == {"ap_invoices_all", "ap_suppliers", "gl_code_combinations"}
+    assert set(s.table_names) == {
+        "ap_invoices_all", "ap_suppliers", "gl_code_combinations", "xxcust.xx_custom_table"
+    }
     edges = {(fk.from_table, fk.from_column, fk.to_table, fk.to_column)
              for fk in s.foreign_keys}
     assert ("ap_invoices_all", "vendor_id", "ap_suppliers", "vendor_id") in edges
